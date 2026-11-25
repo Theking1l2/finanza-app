@@ -5,48 +5,13 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
 type Movement = {
-  id: number;
+  id: string;
   description: string;
   category: string;
   type: "Ingreso" | "Gasto";
   amount: number;
   date: string;
 };
-
-const initialMovements: Movement[] = [
-  {
-    id: 1,
-    description: "Venta de productos",
-    category: "Ventas",
-    type: "Ingreso",
-    amount: 3500,
-    date: "2026-10-27",
-  },
-  {
-    id: 2,
-    description: "Pago de alquiler",
-    category: "Local",
-    type: "Gasto",
-    amount: 900,
-    date: "2026-10-26",
-  },
-  {
-    id: 3,
-    description: "Servicio a un cliente",
-    category: "Servicios",
-    type: "Ingreso",
-    amount: 1800,
-    date: "2026-10-25",
-  },
-  {
-    id: 4,
-    description: "Compra de materiales",
-    category: "Materiales",
-    type: "Gasto",
-    amount: 450,
-    date: "2026-10-24",
-  },
-];
 
 const currency = new Intl.NumberFormat("es-PE", {
   style: "currency",
@@ -55,58 +20,103 @@ const currency = new Intl.NumberFormat("es-PE", {
 
 export default function Home() {
   const [checkingSession, setCheckingSession] = useState(true);
-
-useEffect(() => {
-  let active = true;
-
-  async function checkSession() {
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-
-    if (!active) return;
-
-    if (!session) {
-      window.location.replace("/login");
-      if (checkingSession) {
-  return (
-    <main className="min-h-screen flex items-center justify-center bg-slate-950 text-white">
-      <p className="text-lg">Verificando tu sesión...</p>
-    </main>
-  );
-}
-      return;
-    }
-
-    setCheckingSession(false);
-  }
-
-  checkSession();
-
-  const {
-    data: { subscription },
-  } = supabase.auth.onAuthStateChange((_event, session) => {
-    if (!session) {
-      window.location.replace("/login");
-    } else if (active) {
-      setCheckingSession(false);
-    }
-  });
-
-  return () => {
-    active = false;
-    subscription.unsubscribe();
-  };
-}, []);
-  const [movements, setMovements] =
-    useState<Movement[]>(initialMovements);
+  const [loadingMovements, setLoadingMovements] = useState(true);
+  const [movements, setMovements] = useState<Movement[]>([]);
   const [description, setDescription] = useState("");
   const [category, setCategory] = useState("Ventas");
   const [type, setType] = useState<"Ingreso" | "Gasto">("Ingreso");
   const [amount, setAmount] = useState("");
-  const [date, setDate] = useState("2026-10-28");
+  const [date, setDate] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [notice, setNotice] = useState("");
+  const [savingMovement, setSavingMovement] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  
+  useEffect(() => {
+    let active = true;
+
+    async function loadMovements(userId: string) {
+      setLoadingMovements(true);
+
+      const { data, error } = await supabase
+        .from("movements")
+        .select("id, description, category, type, amount, movement_date")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false });
+
+      if (!active) return;
+
+      if (error) {
+        setNotice(`No se pudieron cargar los movimientos: ${error.message}`);
+        setLoadingMovements(false);
+        return;
+      }
+
+      setMovements(
+        (data ?? []).map((item) => ({
+          id: String(item.id),
+          description: item.description,
+          category: item.category,
+          type: item.type as "Ingreso" | "Gasto",
+          amount: Number(item.amount),
+          date: item.movement_date,
+        }))
+      );
+      setLoadingMovements(false);
+    }
+
+    async function checkSession() {
+      const { data: { session }, error } = await supabase.auth.getSession();
+
+      if (!active) return;
+
+      if (error || !session) {
+        window.location.replace("/login");
+        return;
+      }
+
+      setCheckingSession(false);
+      await loadMovements(session.user.id);
+    }
+
+    void checkSession();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        if (!session) {
+          window.location.replace("/login");
+        } else if (active) {
+          setCheckingSession(false);
+          void loadMovements(session.user.id);
+        }
+      }
+    );
+
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+  const today = new Date();
+  const localDate = [
+    today.getFullYear(),
+    String(today.getMonth() + 1).padStart(2, "0"),
+    String(today.getDate()).padStart(2, "0"),
+  ].join("-");
+
+  setDate(localDate);
+}, []);
+
+  if (checkingSession) {
+    return (
+      <main className="min-h-screen flex items-center justify-center bg-slate-950 text-white">
+        <p className="text-lg">Verificando tu sesión...</p>
+      </main>
+    );
+  }
 
   const income = movements
     .filter((item) => item.type === "Ingreso")
@@ -119,33 +129,198 @@ useEffect(() => {
   const result = income - expenses;
   const margin = income > 0 ? (result / income) * 100 : 0;
 
-  function addMovement(event: React.FormEvent<HTMLFormElement>) {
+  async function addMovement(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     const numericAmount = Number(amount);
 
-    if (!description.trim() || !Number.isFinite(numericAmount) ||
-        numericAmount <= 0 || !date) {
+    if (!description.trim() || !Number.isFinite(numericAmount) || numericAmount <= 0 || !date) {
       setNotice("Completa todos los campos con datos válidos.");
       return;
     }
 
-    setMovements((previous) => [
-      {
-        id: Date.now(),
+    setSavingMovement(true);
+    setNotice("");
+
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+
+    if (userError || !user) {
+      setNotice("Tu sesión no está disponible. Vuelve a iniciar sesión.");
+      setSavingMovement(false);
+      window.location.replace("/login");
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("movements")
+      .insert({
+        user_id: user.id,
         description: description.trim(),
         category,
         type,
         amount: numericAmount,
-        date,
-      },
-      ...previous,
-    ]);
+        movement_date: date,
+      })
+      .select("id, description, category, type, amount, movement_date")
+      .single();
 
+    if (error) {
+      setNotice(`No se pudo guardar el movimiento: ${error.message}`);
+      setSavingMovement(false);
+      return;
+    }
+
+    const savedMovement: Movement = {
+      id: String(data.id),
+      description: data.description,
+      category: data.category,
+      type: data.type as "Ingreso" | "Gasto",
+      amount: Number(data.amount),
+      date: data.movement_date,
+    };
+
+    setMovements((previous) => [savedMovement, ...previous]);
     setDescription("");
     setAmount("");
-    setNotice("Movimiento registrado en esta sesión.");
+    setDate(new Date().toLocaleDateString("en-CA"));
+    setNotice("Movimiento guardado correctamente en tu cuenta.");
     setShowForm(false);
+    setSavingMovement(false);
+  }
+    async function updateMovement(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const numericAmount = Number(amount);
+
+    if (
+      !editingId ||
+      !description.trim() ||
+      !Number.isFinite(numericAmount) ||
+      numericAmount <= 0 ||
+      !date
+    ) {
+      setNotice("Completa todos los campos con datos válidos.");
+      return;
+    }
+
+    setSavingMovement(true);
+    setNotice("");
+
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
+
+    if (userError || !user) {
+      setNotice("Tu sesión no está disponible. Vuelve a iniciar sesión.");
+      setSavingMovement(false);
+      window.location.replace("/login");
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("movements")
+      .update({
+        description: description.trim(),
+        category,
+        type,
+        amount: numericAmount,
+        movement_date: date,
+      })
+      .eq("id", editingId)
+      .eq("user_id", user.id)
+      .select("id, description, category, type, amount, movement_date")
+      .single();
+
+    if (error) {
+      setNotice(`No se pudo actualizar el movimiento: ${error.message}`);
+      setSavingMovement(false);
+      return;
+    }
+
+    const updatedMovement: Movement = {
+      id: String(data.id),
+      description: data.description,
+      category: data.category,
+      type: data.type as "Ingreso" | "Gasto",
+      amount: Number(data.amount),
+      date: data.movement_date,
+    };
+
+    setMovements((previous) =>
+      previous.map((item) =>
+        item.id === editingId ? updatedMovement : item
+      )
+    );
+
+    setEditingId(null);
+    setDescription("");
+    setCategory("Ventas");
+    setType("Ingreso");
+    setAmount("");
+    setNotice("Movimiento actualizado correctamente.");
+    setShowForm(false);
+    setSavingMovement(false);
+  }
+    function startEditing(movement: Movement) {
+    setEditingId(movement.id);
+    setDescription(movement.description);
+    setCategory(movement.category);
+    setType(movement.type);
+    setAmount(String(movement.amount));
+    setDate(movement.date);
+    setShowForm(true);
+    setNotice("");
+  }
+
+  async function deleteMovement() {
+    if (!editingId) return;
+
+    const confirmed = window.confirm(
+      "¿Estás seguro de que deseas eliminar este movimiento? Esta acción no se puede deshacer."
+    );
+
+    if (!confirmed) return;
+
+    setSavingMovement(true);
+    setNotice("");
+
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
+
+    if (userError || !user) {
+      setNotice("Tu sesión no está disponible. Vuelve a iniciar sesión.");
+      setSavingMovement(false);
+      window.location.replace("/login");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("movements")
+      .delete()
+      .eq("id", editingId)
+      .eq("user_id", user.id);
+
+    if (error) {
+      setNotice(`No se pudo eliminar el movimiento: ${error.message}`);
+      setSavingMovement(false);
+      return;
+    }
+
+    setMovements((previous) =>
+      previous.filter((item) => item.id !== editingId)
+    );
+
+    setEditingId(null);
+    setDescription("");
+    setCategory("Ventas");
+    setType("Ingreso");
+    setAmount("");
+    setShowForm(false);
+    setNotice("Movimiento eliminado correctamente.");
+    setSavingMovement(false);
   }
 
   return (
@@ -173,12 +348,31 @@ useEffect(() => {
           </div>
         </nav>
 
-        <div className="mt-auto rounded-xl bg-slate-900 p-4">
-          <p className="font-medium">Versión inicial</p>
-          <p className="mt-1 text-sm text-slate-400">
-            Datos de demostración
-          </p>
-        </div>
+<div className="mt-auto">
+  <div className="rounded-xl bg-slate-900 p-4">
+    <p className="font-medium">Versión inicial</p>
+    <p className="mt-1 text-sm text-slate-400">
+      Datos guardados en Supabase
+    </p>
+  </div>
+
+  <button
+    type="button"
+    onClick={async () => {
+      const { error } = await supabase.auth.signOut();
+
+      if (error) {
+        alert("No se pudo cerrar la sesión: " + error.message);
+        return;
+      }
+
+      window.location.replace("/login");
+    }}
+    className="mt-4 w-full rounded-xl border border-red-500/30 px-4 py-3 text-left font-medium text-red-400 transition hover:bg-red-500/10"
+  >
+    ↪ Cerrar sesión
+  </button>
+</div>
       </aside>
 
       <section className="mx-auto max-w-7xl p-5 sm:p-8 md:ml-64">
@@ -214,12 +408,12 @@ useEffect(() => {
 
         {showForm && (
           <form
-            onSubmit={addMovement}
+  onSubmit={editingId ? updateMovement : addMovement}
             className="mt-7 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
           >
             <h2 className="mb-5 text-xl font-bold">
-              Nuevo movimiento
-            </h2>
+  {editingId ? "Editar movimiento" : "Nuevo movimiento"}
+</h2>
 
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               <label className="text-sm font-medium">
@@ -292,13 +486,37 @@ useEffect(() => {
             <div className="mt-5 flex flex-wrap gap-3">
               <button
                 type="submit"
+                disabled={savingMovement}
                 className="rounded-lg bg-emerald-600 px-5 py-3 font-semibold text-white hover:bg-emerald-700"
               >
-                Guardar movimiento
+                {savingMovement
+  ? "Guardando..."
+  : editingId
+    ? "Guardar cambios"
+    : "Guardar movimiento"}
               </button>
+              {editingId && (
+  <button
+    type="button"
+    onClick={deleteMovement}
+    disabled={savingMovement}
+    className="rounded-lg bg-red-600 px-5 py-3 font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+  >
+    {savingMovement ? "Procesando..." : "Eliminar movimiento"}
+  </button>
+)}
               <button
                 type="button"
-                onClick={() => setShowForm(false)}
+                onClick={() => {
+  setShowForm(false);
+  setEditingId(null);
+  setDescription("");
+  setCategory("Ventas");
+  setType("Ingreso");
+  setAmount("");
+  setNotice("");
+}}
+
                 className="rounded-lg border border-slate-300 px-5 py-3 font-medium"
               >
                 Cancelar
@@ -314,7 +532,7 @@ useEffect(() => {
               {currency.format(income)}
             </p>
             <p className="mt-2 text-sm text-slate-500">
-              Total de ingresos de ejemplo
+              Total de ingresos registrados
             </p>
           </article>
 
@@ -324,7 +542,7 @@ useEffect(() => {
               {currency.format(expenses)}
             </p>
             <p className="mt-2 text-sm text-slate-500">
-              Total de gastos de ejemplo
+              Total de gastos registrados
             </p>
           </article>
 
@@ -356,16 +574,16 @@ useEffect(() => {
             <div>
               <h2 className="text-xl font-bold">Movimientos recientes</h2>
               <p className="mt-1 text-sm text-slate-500">
-                Ingresos y gastos registrados en esta sesión.
+                Movimientos guardados en tu cuenta.
               </p>
             </div>
             <span className="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-600">
-              {movements.length} movimientos
+              {loadingMovements ? "Cargando..." : `${movements.length} movimientos`}
             </span>
           </div>
 
           <div className="mt-5 overflow-x-auto">
-            <table className="w-full min-w-[600px] text-left text-sm">
+            <table className="w-full min-w-[720px] text-left text-sm">
               <thead>
                 <tr className="border-b border-slate-200 text-slate-500">
                   <th className="pb-3 pr-4 font-medium">Descripción</th>
@@ -373,10 +591,15 @@ useEffect(() => {
                   <th className="pb-3 pr-4 font-medium">Fecha</th>
                   <th className="pb-3 pr-4 font-medium">Tipo</th>
                   <th className="pb-3 text-right font-medium">Importe</th>
+                  <th className="pb-3 pl-4 text-center font-medium">Acciones</th>
                 </tr>
               </thead>
               <tbody>
-                {movements.map((item) => (
+                {loadingMovements ? (
+                  <tr><td colSpan={6} className="py-6 text-center text-slate-500">Cargando movimientos...</td></tr>
+                ) : movements.length === 0 ? (
+                  <tr><td colSpan={6} className="py-6 text-center text-slate-500">Todavía no tienes movimientos registrados.</td></tr>
+                ) : movements.map((item) => (
                   <tr key={item.id} className="border-b border-slate-100 last:border-0">
                     <td className="py-4 pr-4 font-medium">{item.description}</td>
                     <td className="py-4 pr-4 text-slate-500">{item.category}</td>
@@ -390,6 +613,15 @@ useEffect(() => {
                       {item.type === "Ingreso" ? "+" : "-"}
                       {currency.format(item.amount)}
                     </td>
+                    <td className="py-4 pl-4 text-center">
+  <button
+    type="button"
+    onClick={() => startEditing(item)}
+    className="rounded-lg bg-blue-50 px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-100"
+  >
+    Editar
+  </button>
+</td>
                   </tr>
                 ))}
               </tbody>
@@ -408,7 +640,7 @@ useEffect(() => {
         </section>
 
         <footer className="py-8 text-center text-xs text-slate-500">
-          Finanza · Prototipo en desarrollo · Importes de demostración
+          Finanza · En desarrollo
         </footer>
       </section>
     </main>
