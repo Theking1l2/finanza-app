@@ -1,7 +1,8 @@
 
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { supabase } from "@/lib/supabase";
 
 type Movement = {
   id: number;
@@ -53,6 +54,50 @@ const currency = new Intl.NumberFormat("es-PE", {
 });
 
 export default function Home() {
+  const [checkingSession, setCheckingSession] = useState(true);
+
+useEffect(() => {
+  let active = true;
+
+  async function checkSession() {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    if (!active) return;
+
+    if (!session) {
+      window.location.replace("/login");
+      if (checkingSession) {
+  return (
+    <main className="min-h-screen flex items-center justify-center bg-slate-950 text-white">
+      <p className="text-lg">Verificando tu sesión...</p>
+    </main>
+  );
+}
+      return;
+    }
+
+    setCheckingSession(false);
+  }
+
+  checkSession();
+
+  const {
+    data: { subscription },
+  } = supabase.auth.onAuthStateChange((_event, session) => {
+    if (!session) {
+      window.location.replace("/login");
+    } else if (active) {
+      setCheckingSession(false);
+    }
+  });
+
+  return () => {
+    active = false;
+    subscription.unsubscribe();
+  };
+}, []);
   const [movements, setMovements] =
     useState<Movement[]>(initialMovements);
   const [description, setDescription] = useState("");
